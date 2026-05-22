@@ -30,20 +30,46 @@ In a new project:
 
 ```bash
 git clone https://github.com/khangpworking/model-orchestra ~/model-orchestra
+
+# Scaffolding only
 ~/model-orchestra/scripts/install.sh /path/to/your/project
+
+# Or scaffolding + pre-push hook (recommended)
+~/model-orchestra/scripts/install.sh /path/to/your/project --hook
 ```
 
-This drops the templates into your project and appends to `.gitignore`.
+This drops templates into your project, appends to `.gitignore`, and (with `--hook`) symlinks a pre-push gate that scans for AI-footprint markers and obvious secrets.
+
+### Claude Code skills
+
+Two slash commands ship in `skills/claude/`:
+
+```bash
+ln -s ~/model-orchestra/skills/claude/* ~/.claude/skills/
+```
+
+- `/orchestra-plan` — planner role. Scaffolds `docs-md/<feature>/` design files and `.ai/STATE.md` from a feature request.
+- `/orchestra-audit` — reviewer role. Runs the pre-push security + AI-footprint gate.
+
+## Pre-push hook
+
+The hook enforces what a git hook can:
+
+1. AI-footprint scrub — blocks `Co-Authored-By: <AI>`, `Generated with X`, `🤖`, etc. in commit messages and diff
+2. Secret pattern scan — basic regex for AWS keys, OpenAI/Anthropic/Google tokens, private keys, `api_key = "..."` patterns
+3. Reminder to run `/vbs-scan-security` (interactive — cannot auto-fire from a hook)
+
+Override with `git push --no-verify` if needed. Use sparingly.
+
+## Worked example
+
+See [`examples/create-user/`](examples/create-user/) — full design contract for a typical `POST /users` signup endpoint, including plan, test spec, schema, security analysis, and `.ai/STATE.md`.
 
 ## What's NOT included
 
 - Specific model choices — that's your stack decision
 - API keys, prompts, agent configs
 - A test runner — your project picks its own
-
-## Status
-
-MVP. Phase 2 ships: Claude Code skills (`/orchestra-plan`, `/orchestra-audit`), a pre-push hook that enforces the security gate, and worked examples.
 
 ## License
 

@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# pre-push — model-orchestra security + AI-footprint gate.
+#
+# Enforces what a git hook can enforce:
+#   1. AI-footprint scrub on commit messages and diff (regex)
+#   2. Secret pattern scan (basic regex for API keys, tokens)
+#   3. Warning to run /vbs-scan-security manually if vbsec is installed
+#
+# What it CANNOT enforce (Claude Code slash commands are interactive):
+#   - /vbs-scan-security (the full vulnerability scan)
+#
+# Override (use sparingly):
+#   git push --no-verify
+
+set -uo pipefail
+
+REMOTE="${1:-origin}"
+URL="${2:-}"
+
+# Detect upstream — if none, scan last 20 commits as fallback
+if git rev-parse --abbrev-ref --symbolic-full-name @{u} >/dev/null 2>&1; then
+  RANGE='@{u}..HEAD'
+else
+  RANGE='HEAD~20..HEAD'
+fi
+
+fail=0
+
+# ── 1. AI-footprint scrub ────────────────────────────────────────────────────
+echo "→ AI-footprint scrub..."
+
+AI_PATTERNS='Co-Authored-By: (Claude|ChatGPT|GPT-?[0-9]|Gemini|Copilot|Cursor|Codeium|Anthropic AI|OpenAI)|Generated with \[?(Claude Code|ChatGPT|GPT|Gemini|Copilot|Cursor)|🤖 Generated|Made with Claude|Built with AI assistance'
+
+if git log "$RANGE" --pretty=%B 2>/dev/null | grep -E "$AI_PATTERNS" > /dev/null; then
+  echo "  ✗ AI-footprint in commit messages:"
+  git log "$RANGE" --pretty=%B 2>/dev/null | grep -nE "$AI_PATTERNS" | head -5 | sed 's/^/    /'
+  fail=1
+fi
+
+if git diff "$RANGE" 2>/dev/null | grep -E "$AI_PATTERNS" > /dev/null; then
+  echo "  ✗ AI-footprint in diff:"
+  git diff "$RANGE" 2>/dev/null | grep -nE "$AI_PATTERNS" | head -5 | sed 's/^/    /'
+  fail=1
+fi
+
+[ $fail -eq 0 ] && echo "  ✓ Clean"
+
+# ── 2. Secret pattern scan ───────────────────────────────────────────────────
+echo "→ Secret pattern scan..."
+
+# Patterns: AWS keys, generic API keys, OpenAI/Anthropic/Google tokens, private keys
+SECRET_PATTERNS='(AKIA[0-9A-Z]{16})|(sk-[a-zA-Z0-9]{20,})|(sk-ant-[a-zA-Z0-9_-]{20,})|(AIza[0-9A-Za-z_-]{20,})|(ghp_[A-Za-z0-9]{36})|(-----BEGIN (RSA|OPENSSH|EC|PGP) PRIVATE KEY-----)|(["'\'']?(api[_-]?key|apikey|secret|password|token)["'\'']?\s*[:=]\s*["'\''][^"'\'']{16,}["'\''])'
+
+if git diff "$RANGE" 2>/dev/null | grep -nEi "$SECRET_PATTERNS" > /dev/null; then
+  echo "  ✗ Possible secrets in diff:"
+  git diff "$RANGE" 2>/dev/null | grep -nEi "$SECRET_PATTERNS" | head -5 | sed 's/^/    /'
+  fail=1
+else
+  echo "  ✓ No obvious secret patterns"
+fi
+
+# ── 3. vbsec reminder (cannot enforce — interactive) ────────────────────────
+echo "→ Security scan reminder..."
+
+if [ -d "$HOME/.claude/skills/vbs-scan-security" ]; then
+  echo "  ℹ️  Run /vbs-scan-security in Claude Code before pushing if you have not."
+  echo "     (Hook cannot auto-fire interactive scans.)"
+else
+  echo "  ⚠  vbsec not installed. Install: https://github.com/tanviet12/vbsec"
+fi
+
+# ── Result ───────────────────────────────────────────────────────────────────
+echo ""
+
+if [ $fail -ne 0 ]; then
+  echo "✗ Pre-push checks failed."
+  echo "  Fix the findings above, or override with: git push --no-verify"
+  exit 1
+fi
+
+echo "✓ Pre-push checks passed."
+exit 0
