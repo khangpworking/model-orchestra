@@ -51,6 +51,13 @@ ln -s ~/model-orchestra/skills/claude/* ~/.claude/skills/
 - `/orchestra-plan` — planner role. Scaffolds `docs-md/<feature>/` design files and `.ai/STATE.md` from a feature request.
 - `/orchestra-audit` — reviewer role. Runs the pre-push security + AI-footprint gate.
 
+### Recommended companion skills
+
+Not bundled with this repo, but they pair well with the flow:
+
+- [`prompt-master`](https://github.com/nidhinjs/prompt-master) — sharpens cross-model prompts. Use it when the planner briefs the implementer (or any handoff between models with different prompting styles). Profiles for Claude, GPT/Codex, Gemini, Kimi K2, Cursor, and 20+ others.
+- [`semble`](https://github.com/MinishLab/semble) — semantic code search via MCP. Drop-in for any agent that supports MCP servers. Use when the planner or reviewer needs to find code by meaning ("where is X handled") rather than by exact symbol. Falls back to `grep` for known-string lookups.
+
 ## Pre-push hook
 
 The hook enforces what a git hook can:
