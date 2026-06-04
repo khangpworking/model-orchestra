@@ -1,3 +1,3 @@
 branch: feat/worker-smoke-test
 steps: 1
-status: requested
+status: running
