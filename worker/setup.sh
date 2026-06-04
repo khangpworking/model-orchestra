@@ -28,7 +28,16 @@ gh auth status >/dev/null 2>&1 || {
 
 # 2. clone / update -------------------------------------------------------
 mkdir -p "$WORKDIR"
-if [ -d "$REPO_DIR/.git" ]; then git -C "$REPO_DIR" fetch --all -q; else gh repo clone "$REPO" "$REPO_DIR"; fi
+if [ -d "$REPO_DIR/.git" ]; then
+  git -C "$REPO_DIR" fetch --all -q
+  git -C "$REPO_DIR" checkout master -q
+  git -C "$REPO_DIR" reset --hard origin/master -q   # pick up worker-code fixes on re-run
+else
+  gh repo clone "$REPO" "$REPO_DIR"
+fi
+# commit identity for the worker's status/result pushes (not an AI footprint)
+git -C "$REPO_DIR" config user.name "orchestra-worker"
+git -C "$REPO_DIR" config user.email "orchestra-worker@local"
 
 # 3. shared secret (generated once, reused) -------------------------------
 [ -f "$SECRET_FILE" ] || (umask 077; openssl rand -hex 32 > "$SECRET_FILE")

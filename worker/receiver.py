@@ -64,7 +64,10 @@ def set_status(branch, status):
     path = os.path.join(REPO_DIR, MARKER)
     txt = re.sub(r"(?m)^status:.*$", f"status: {status}", open(path).read())
     open(path, "w").write(txt)
-    git("add", MARKER)
+    # stage everything so the implementer's edits ride along with the status flip,
+    # not just the marker. "running" is committed pre-run (clean tree → marker only);
+    # "done"/"failed" captures whatever the implementer wrote.
+    git("add", "-A")
     git("commit", "-m", f"worker: dispatch {status}")
     git("push", "origin", branch)
     notify(f"dispatch {status} on {branch}")
