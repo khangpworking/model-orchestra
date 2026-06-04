@@ -57,7 +57,7 @@ pkill -f "cloudflared tunnel --url" 2>/dev/null || true
 nohup cloudflared tunnel --url "http://localhost:$PORT" > "$WORKDIR/tunnel.log" 2>&1 &
 URL=""
 for _ in $(seq 1 30); do
-  URL=$(grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' "$WORKDIR/tunnel.log" | head -1 || true)
+  URL=$(grep -a -oE 'https://[a-z0-9-]+\.trycloudflare\.com' "$WORKDIR/tunnel.log" | head -1 || true)
   [ -n "$URL" ] && break; sleep 1
 done
 [ -z "$URL" ] && { echo "Tunnel URL not found — see $WORKDIR/tunnel.log"; exit 1; }
