@@ -29,14 +29,24 @@ import pathlib
 import re
 import subprocess
 import sys
+import tempfile
+import threading
+from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 EFFORT_TO_THINKING = {"low": "low", "standard": "medium", "high": "high"}
 
 STEP_RE = re.compile(r"^- \[( |x)\] (Step (\d+):.*)$")
-FIELD_RE = re.compile(r"^\s*(executor|effort):\s*(\S+)")
+FIELD_RE = re.compile(r"^\s*(executor|effort|agent):\s*(\S+)")
 
 # Exit code the orchestrator uses to signal a blocked step.
 EXIT_BLOCKED = 2
+
+DEFAULT_AGENT = "kimi"
+
+# git worktree add/remove and ref creation race on the shared .git when run
+# from multiple threads; serialise just those mutations (not the agent runs).
+_WORKTREE_LOCK = threading.Lock()
 
 
 def parse_steps(text):
@@ -54,6 +64,7 @@ def parse_steps(text):
                 "num": int(m.group(3)),
                 "executor": None,
                 "effort": None,
+                "agent": None,
             }
             continue
         if cur:
@@ -106,6 +117,98 @@ def is_blocked(project):
     return (pathlib.Path(project) / ".ai" / "BLOCKED.md").is_file()
 
 
+# --- parallel dispatch ----------------------------------------------------
+
+def git(cwd, *args):
+    """Run a git command, returning stdout. Raises on non-zero exit."""
+    return subprocess.run(
+        ["git", "-C", cwd, *args], check=True, capture_output=True, text=True
+    ).stdout
+
+
+def agent_cmd(agent, thinking, prompt, provider, model):
+    """Map a step's agent tag to the command that runs it (see docs/parallel.md)."""
+    a = (agent or DEFAULT_AGENT).lower()
+    if a == "gemini":
+        return os.environ.get("GEMINI_CMD", "gemini --yolo -p").split() + [prompt]
+    if a == "claude":
+        return os.environ.get("CLAUDE_CMD", "claude -p").split() + [prompt]
+    if a == "gemma":
+        return ["pi", "--provider", "cliproxy", "--model", "gemma-31b",
+                "--thinking", thinking, "--print", prompt]
+    # kimi / implementer / default: the configured pi provider/model
+    return ["pi", "--provider", provider, "--model", model,
+            "--thinking", thinking, "--print", prompt]
+
+
+def run_task(step, project, feature, provider, model):
+    """Run one step in its own worktree + branch, push it, return (num, status, branch)."""
+    num = step["num"]
+    branch = f"{feature}--s{num}"
+    base = git(project, "rev-parse", "HEAD").strip()
+    wt = os.path.join(tempfile.gettempdir(),
+                      f"orch-{feature.replace('/', '-')}-s{num}")
+
+    with _WORKTREE_LOCK:
+        # idempotent re-run: drop any stale worktree/branch first
+        subprocess.run(["git", "-C", project, "worktree", "remove", wt, "--force"],
+                       capture_output=True)
+        subprocess.run(["git", "-C", project, "branch", "-D", branch],
+                       capture_output=True)
+        git(project, "worktree", "add", "-b", branch, wt, base)
+
+    try:
+        thinking = EFFORT_TO_THINKING.get(step["effort"], "medium")
+        cmd = agent_cmd(step["agent"], thinking, build_prompt(step), provider, model)
+        agent = (step["agent"] or DEFAULT_AGENT).lower()
+        print(f"  [s{num} -> {agent}] start: {step['desc']}", flush=True)
+        rc = subprocess.run(cmd, cwd=wt).returncode
+        if rc != 0:
+            return (num, "failed", branch)
+        if (pathlib.Path(wt) / ".ai" / "BLOCKED.md").is_file():
+            return (num, "blocked", branch)
+        if not git(wt, "status", "--porcelain").strip():
+            return (num, "empty", branch)  # agent made no changes
+        git(wt, "add", "-A")
+        git(wt, "commit", "-m", f"step {num}: {step['desc'][:60]}")
+        git(wt, "push", "-f", "origin", branch)
+        return (num, "done", branch)
+    finally:
+        with _WORKTREE_LOCK:
+            subprocess.run(["git", "-C", project, "worktree", "remove", wt, "--force"],
+                           capture_output=True)
+
+
+def run_parallel(steps, project, provider, model):
+    """Run steps grouped by agent: groups concurrent, same-agent serial."""
+    feature = git(project, "rev-parse", "--abbrev-ref", "HEAD").strip()
+    groups = defaultdict(list)
+    for s in steps:
+        groups[(s["agent"] or DEFAULT_AGENT).lower()].append(s)
+
+    print(f"Parallel: {len(steps)} step(s) across {len(groups)} agent(s): "
+          f"{', '.join(sorted(groups))}")
+
+    def run_group(group_steps):
+        return [run_task(s, project, feature, provider, model) for s in group_steps]
+
+    results = []
+    with ThreadPoolExecutor(max_workers=len(groups)) as ex:
+        futures = [ex.submit(run_group, g) for g in groups.values()]
+        for f in as_completed(futures):
+            results.extend(f.result())
+
+    print("\n--- parallel results ---")
+    for num, status, branch in sorted(results):
+        print(f"  step {num}: {status:8} {branch}")
+
+    if any(st == "blocked" for _, st, _ in results):
+        return EXIT_BLOCKED
+    if any(st == "failed" for _, st, _ in results):
+        return 1
+    return 0
+
+
 def run_step(step, project, model, provider, gemini_review, dry_run):
     thinking = EFFORT_TO_THINKING.get(step["effort"], "medium")
     prompt = build_prompt(step)
@@ -148,6 +251,9 @@ def main():
     ap.add_argument("--provider", default="kimi")
     ap.add_argument("--gemini-review", action="store_true",
                     help="run gemini after each step to verify the diff")
+    ap.add_argument("--parallel", action="store_true",
+                    help="run independent steps in parallel, one worktree+branch "
+                         "each, routed by per-step agent (see docs/parallel.md)")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
@@ -172,6 +278,23 @@ def main():
     print(f"Model:   {args.provider}/{args.model}")
     if args.gemini_review:
         print(f"Gemini review: enabled")
+
+    if args.parallel:
+        if args.dry_run:
+            for s in todo:
+                agent = (s["agent"] or DEFAULT_AGENT).lower()
+                print(f"  (dry-run) step {s['num']} -> {agent}: {s['desc']}")
+            return
+        rc = run_parallel(todo, str(project), args.provider, args.model)
+        if rc == EXIT_BLOCKED:
+            sys.exit(EXIT_BLOCKED)
+        if rc != 0:
+            sys.exit(f"\nParallel dispatch had failures (code {rc}). "
+                     "Stopping for human review.")
+        print("\nAll parallel steps dispatched to feat/<feature>--sN branches. "
+              "Next: audit + merge on the orchestrator.")
+        return
+
     print(f"Running {len(todo)} implementer step(s) sequentially.")
 
     for s in todo:

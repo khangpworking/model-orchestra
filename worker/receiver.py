@@ -94,12 +94,20 @@ def notify(msg):
         pass
 
 
-def run_dispatch(branch, steps):
+def run_dispatch(branch, steps, mode):
     set_status(branch, "running")
     base = ["python3", os.path.join(REPO_DIR, "scripts", "dispatch.py"),
             REPO_DIR, "--provider", PROVIDER, "--model", MODEL]
     if GEMINI_REVIEW:
         base.append("--gemini-review")
+
+    if mode == "parallel":
+        # one call: dispatch.py fans out all implementer steps to --sN branches
+        rc = subprocess.run(base + ["--parallel"], cwd=REPO_DIR).returncode
+        status = "blocked" if rc == EXIT_BLOCKED else ("done" if rc == 0 else "failed")
+        set_status(branch, status)
+        return
+
     ok = True
     blocked = False
     for step in [s.strip() for s in steps.split(",") if s.strip()]:
@@ -137,7 +145,8 @@ class Handler(BaseHTTPRequestHandler):
             git("reset", "--hard", f"origin/{branch}")
             marker = read_marker()
             if marker.get("status") == "requested":
-                run_dispatch(branch, marker.get("steps", ""))
+                run_dispatch(branch, marker.get("steps", ""),
+                             marker.get("mode", "sequential"))
         except Exception as e:
             notify(f"error: {e}")
 
