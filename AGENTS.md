@@ -30,8 +30,12 @@ Do not guess. Do not invent scope. Instead:
 2. Stop immediately.
 3. Print exactly: `BLOCKED: see .ai/BLOCKED.md`
 
-The orchestrator will read your question and provide an answer before the next run.
-Delete `.ai/BLOCKED.md` once it is no longer needed.
+The answer comes from the **orchestrator** (the planner that owns the design),
+not from any agent running locally on this machine. Do not consult or ask other
+local tools for a decision — your question travels back to the orchestrator over
+git, and the orchestrator pushes an answer (an updated step or a new
+`.ai/BLOCKED.md` reply) before the next run. Delete `.ai/BLOCKED.md` once it is
+no longer needed.
 
 ## When done
 
