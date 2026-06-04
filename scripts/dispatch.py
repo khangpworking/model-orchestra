@@ -10,15 +10,21 @@ wearing the reviewer hat) gates the plan before dispatch and audits the diff
 after. This script only drives the implementer.
 
 Usage:
-  dispatch.py <project-dir> [--step N] [--model gemma-31b] [--provider cliproxy]
-              [--dry-run]
+  dispatch.py <project-dir> [--step N] [--model kimi-code] [--provider kimi]
+              [--gemini-review] [--dry-run]
+
+  --gemini-review  After each step, run `gemini` to verify the diff looks right.
+                   Requires `gemini` on PATH. Set GEMINI_CMD to override the
+                   default command (default: gemini --yolo -p).
 
 Examples:
-  dispatch.py ~/Developer/personal-assistant            # run all implementer steps
-  dispatch.py ~/Developer/personal-assistant --step 4   # run only Step 4
-  dispatch.py ~/Developer/personal-assistant --dry-run  # show plan, run nothing
+  dispatch.py ~/Developer/my-project                       # run all implementer steps
+  dispatch.py ~/Developer/my-project --step 4              # run only Step 4
+  dispatch.py ~/Developer/my-project --gemini-review       # implement + gemini review
+  dispatch.py ~/Developer/my-project --dry-run             # show plan, run nothing
 """
 import argparse
+import os
 import pathlib
 import re
 import subprocess
@@ -28,6 +34,9 @@ EFFORT_TO_THINKING = {"low": "low", "standard": "medium", "high": "high"}
 
 STEP_RE = re.compile(r"^- \[( |x)\] (Step (\d+):.*)$")
 FIELD_RE = re.compile(r"^\s*(executor|effort):\s*(\S+)")
+
+# Exit code the orchestrator uses to signal a blocked step.
+EXIT_BLOCKED = 2
 
 
 def parse_steps(text):
@@ -59,25 +68,45 @@ def parse_steps(text):
 def build_prompt(step):
     return (
         "You are the implementer in a model-orchestra workflow.\n"
-        "First read .ai/STATE.md and the relevant design files under docs-md/ "
+        "Read AGENTS.md (in the repo root) for your role and rules before doing anything.\n"
+        "Then read .ai/STATE.md and the relevant design files under docs-md/ "
         "for the goal, constraints, and files in scope.\n\n"
         f"Execute ONLY this step, nothing else:\n\n  {step['desc']}\n\n"
-        "Follow the constraints in STATE.md and the project's CLAUDE.md/AGENTS.md.\n\n"
-        "Plan-execution discipline (follow exactly):\n"
-        "1. Do this one step only. Do not start, peek at, or 'prepare for' other steps.\n"
-        "2. Stay surgical: change only what THIS step requires. No refactors, "
-        "renames, or cleanups the step didn't ask for.\n"
-        "3. Write tests before production code where the step calls for it, "
-        "then VERIFY: run the tests/build and confirm they pass before declaring done. "
-        "If you cannot verify, say so explicitly.\n"
-        "4. If the step is ambiguous, blocked, or needs a decision that is NOT in "
-        "the plan, STOP and report what's missing — do not guess or invent scope.\n\n"
+        "If you are blocked or uncertain about anything, follow the BLOCKED procedure "
+        "in AGENTS.md — write .ai/BLOCKED.md and print 'BLOCKED: see .ai/BLOCKED.md'. "
+        "Do not guess or invent scope.\n\n"
         "When finished, print a one-paragraph summary of exactly which files you "
-        "created or changed, and the result of the verification you ran."
+        "created or changed (with paths relative to the repo root), and the result "
+        "of the verification you ran."
     )
 
 
-def run_step(step, project, model, provider, dry_run):
+def build_review_prompt(step, project):
+    diff = subprocess.run(
+        ["git", "diff", "--cached", "--stat"],
+        cwd=project, capture_output=True, text=True
+    ).stdout or subprocess.run(
+        ["git", "diff", "--stat", "HEAD"],
+        cwd=project, capture_output=True, text=True
+    ).stdout
+    return (
+        f"You are the reviewer in a model-orchestra workflow.\n\n"
+        f"The implementer just finished this step:\n\n  {step['desc']}\n\n"
+        f"Git diff stat:\n{diff or '(no diff)'}\n\n"
+        "Check: does the diff match what the step asked for — no more, no less? "
+        "Are any obviously wrong files created or modified? "
+        "Reply with one of:\n"
+        "  LGTM: <one sentence why>\n"
+        "  CONCERN: <specific issue>\n\n"
+        "Do not re-implement anything. Observe only."
+    )
+
+
+def is_blocked(project):
+    return (pathlib.Path(project) / ".ai" / "BLOCKED.md").is_file()
+
+
+def run_step(step, project, model, provider, gemini_review, dry_run):
     thinking = EFFORT_TO_THINKING.get(step["effort"], "medium")
     prompt = build_prompt(step)
     cmd = [
@@ -89,16 +118,36 @@ def run_step(step, project, model, provider, dry_run):
     if dry_run:
         print("    (dry-run: not executed)")
         return 0
+
     proc = subprocess.run(cmd, cwd=project)
-    return proc.returncode
+    if proc.returncode != 0:
+        return proc.returncode
+
+    if is_blocked(project):
+        print(f"\nStep {step['num']} is BLOCKED — implementer left a question in .ai/BLOCKED.md")
+        return EXIT_BLOCKED
+
+    if gemini_review:
+        gemini_cmd = os.environ.get("GEMINI_CMD", "gemini --yolo -p")
+        review_prompt = build_review_prompt(step, project)
+        print(f"\n--- Gemini review for step {step['num']} ---")
+        review_proc = subprocess.run(
+            gemini_cmd.split() + [review_prompt], cwd=project
+        )
+        if review_proc.returncode != 0:
+            print("(gemini review failed — continuing anyway)")
+
+    return 0
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("project", help="project dir containing .ai/STATE.md")
     ap.add_argument("--step", type=int, help="run only this step number")
-    ap.add_argument("--model", default="gemma-31b")
-    ap.add_argument("--provider", default="cliproxy")
+    ap.add_argument("--model", default="kimi-code")
+    ap.add_argument("--provider", default="kimi")
+    ap.add_argument("--gemini-review", action="store_true",
+                    help="run gemini after each step to verify the diff")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
@@ -121,10 +170,15 @@ def main():
 
     print(f"Project: {project}")
     print(f"Model:   {args.provider}/{args.model}")
+    if args.gemini_review:
+        print(f"Gemini review: enabled")
     print(f"Running {len(todo)} implementer step(s) sequentially.")
 
     for s in todo:
-        rc = run_step(s, str(project), args.model, args.provider, args.dry_run)
+        rc = run_step(s, str(project), args.model, args.provider,
+                      args.gemini_review, args.dry_run)
+        if rc == EXIT_BLOCKED:
+            sys.exit(EXIT_BLOCKED)
         if rc != 0:
             sys.exit(f"\nStep {s['num']} exited with code {rc}. Stopping for human review.")
 

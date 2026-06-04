@@ -16,9 +16,10 @@ Env:
   WEBHOOK_SECRET   shared secret GitHub signs payloads with (required)
   REPO_DIR         path to the cloned repo (required)
   PORT             listen port on 127.0.0.1 (default 8799)
-  PI_PROVIDER      passed to dispatch.py --provider (default cliproxy)
-  PI_MODEL         passed to dispatch.py --model    (default gemma-31b)
-  TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID   optional, for done/failed pings
+  PI_PROVIDER      passed to dispatch.py --provider (default kimi)
+  PI_MODEL         passed to dispatch.py --model    (default kimi-code)
+  GEMINI_REVIEW    set to 1 to pass --gemini-review to dispatch.py
+  TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID   optional, for done/failed/blocked pings
 """
 import hashlib
 import hmac
@@ -31,9 +32,13 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 SECRET = os.environ["WEBHOOK_SECRET"].encode()
 REPO_DIR = os.environ["REPO_DIR"]
 PORT = int(os.environ.get("PORT", "8799"))
-PROVIDER = os.environ.get("PI_PROVIDER", "cliproxy")
-MODEL = os.environ.get("PI_MODEL", "gemma-31b")
+PROVIDER = os.environ.get("PI_PROVIDER", "kimi")
+MODEL = os.environ.get("PI_MODEL", "kimi-code")
+GEMINI_REVIEW = os.environ.get("GEMINI_REVIEW", "0") == "1"
 MARKER = ".ai/DISPATCH.md"
+
+# dispatch.py exit code for a blocked step (implementer left a question)
+EXIT_BLOCKED = 2
 
 
 def git(*args):
@@ -66,7 +71,7 @@ def set_status(branch, status):
     open(path, "w").write(txt)
     # stage everything so the implementer's edits ride along with the status flip,
     # not just the marker. "running" is committed pre-run (clean tree → marker only);
-    # "done"/"failed" captures whatever the implementer wrote.
+    # "done"/"failed"/"blocked" captures whatever the implementer wrote.
     git("add", "-A")
     git("commit", "-m", f"worker: dispatch {status}")
     git("push", "origin", branch)
@@ -93,12 +98,23 @@ def run_dispatch(branch, steps):
     set_status(branch, "running")
     base = ["python3", os.path.join(REPO_DIR, "scripts", "dispatch.py"),
             REPO_DIR, "--provider", PROVIDER, "--model", MODEL]
+    if GEMINI_REVIEW:
+        base.append("--gemini-review")
     ok = True
+    blocked = False
     for step in [s.strip() for s in steps.split(",") if s.strip()]:
-        if subprocess.run(base + ["--step", step], cwd=REPO_DIR).returncode != 0:
+        rc = subprocess.run(base + ["--step", step], cwd=REPO_DIR).returncode
+        if rc == EXIT_BLOCKED:
+            blocked = True
             ok = False
             break
-    set_status(branch, "done" if ok else "failed")
+        if rc != 0:
+            ok = False
+            break
+    if blocked:
+        set_status(branch, "blocked")
+    else:
+        set_status(branch, "done" if ok else "failed")
 
 
 class Handler(BaseHTTPRequestHandler):

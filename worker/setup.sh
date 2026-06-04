@@ -46,7 +46,8 @@ SECRET="$(cat "$SECRET_FILE")"
 # 4. (re)start the receiver ----------------------------------------------
 pkill -f "$WORKDIR/repo/worker/receiver.py" 2>/dev/null || true
 WEBHOOK_SECRET="$SECRET" REPO_DIR="$REPO_DIR" PORT="$PORT" \
-  PI_PROVIDER="${PI_PROVIDER:-cliproxy}" PI_MODEL="${PI_MODEL:-gemma-31b}" \
+  PI_PROVIDER="${PI_PROVIDER:-kimi}" PI_MODEL="${PI_MODEL:-kimi-code}" \
+  GEMINI_REVIEW="${GEMINI_REVIEW:-0}" \
   TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-}" TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID:-}" \
   nohup python3 "$REPO_DIR/worker/receiver.py" > "$WORKDIR/receiver.log" 2>&1 &
 sleep 1
