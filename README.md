@@ -22,7 +22,9 @@ Core idea: **disk is memory, model is compute.** Permanent feature designs live 
 9. **Secretary** pushes to **feature branch only** (never main, never force-push)
 10. **Planner** updates `docs-md/` if design evolved
 
-See [docs/flow.md](docs/flow.md) for the full role + step reference.
+See [docs/flow.md](docs/flow.md) for the full role + step reference, and
+[docs/distributed.md](docs/distributed.md) for running the roles across more
+than one machine (orchestrator + disposable worker, linked by git).
 
 ## Install
 
