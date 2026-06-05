@@ -7,6 +7,9 @@
 #
 # Usage:  REPO=owner/name bash worker/setup.sh
 # Override: WORKDIR, PORT, PI_PROVIDER, PI_MODEL, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+#          MODEL_ORCHESTRA_REF — engine version to run. Default: master (auto-update).
+#                                Pin a tag (v1.3.2) or commit (8c4d9ab) to freeze
+#                                all workers on a known-good version without editing this script.
 set -euo pipefail
 
 REPO="${REPO:-khangpworking/model-orchestra}"
@@ -27,13 +30,16 @@ gh auth status >/dev/null 2>&1 || {
   echo "Then re-run this script."; exit 1; }
 
 # 2. clone / update -------------------------------------------------------
+# MODEL_ORCHESTRA_REF default = master (auto-update); pin a tag/commit to freeze.
+REPO_REF="${MODEL_ORCHESTRA_REF:-master}"
 mkdir -p "$WORKDIR"
-if [ -d "$REPO_DIR/.git" ]; then
-  git -C "$REPO_DIR" fetch --all -q
-  git -C "$REPO_DIR" checkout master -q
-  git -C "$REPO_DIR" reset --hard origin/master -q   # pick up worker-code fixes on re-run
-else
-  gh repo clone "$REPO" "$REPO_DIR"
+[ -d "$REPO_DIR/.git" ] || gh repo clone "$REPO" "$REPO_DIR"
+git -C "$REPO_DIR" fetch --all -q
+git -C "$REPO_DIR" checkout "$REPO_REF" -q
+# branch ref -> hard-reset to upstream (pick up worker-code fixes on re-run);
+# tag/commit -> detached HEAD, leave exactly where checkout put us (the pin).
+if git -C "$REPO_DIR" symbolic-ref -q HEAD >/dev/null; then
+  git -C "$REPO_DIR" reset --hard "origin/$REPO_REF" -q
 fi
 # commit identity for the worker's status/result pushes (not an AI footprint)
 git -C "$REPO_DIR" config user.name "orchestra-worker"
