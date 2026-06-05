@@ -37,6 +37,20 @@ git, and the orchestrator pushes an answer (an updated step or a new
 `.ai/BLOCKED.md` reply) before the next run. Delete `.ai/BLOCKED.md` once it is
 no longer needed.
 
+## Using Gemini CLI (headless agents)
+
+If your step requires calling Gemini, do **not** use the Skill tool — it spawns
+a subagent that does not inherit headless permissions and will silently fail.
+Instead, call Gemini directly via the Bash tool:
+
+```bash
+gemini "<your prompt>" --yolo -o text
+```
+
+Write the output to a file yourself using standard shell redirection or a
+second Bash call. This approach works reliably under `--permission-mode
+bypassPermissions`.
+
 ## When done
 
 Print a one-paragraph summary containing:

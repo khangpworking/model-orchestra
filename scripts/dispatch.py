@@ -132,11 +132,14 @@ def agent_cmd(agent, thinking, prompt, provider, model):
     if a == "gemini":
         return os.environ.get("GEMINI_CMD", "gemini --yolo -p").split() + [prompt]
     if a == "claude":
-        return os.environ.get("CLAUDE_CMD", "claude -p").split() + [prompt]
+        # bypassPermissions + --add-dir . trusts the worktree CWD for Bash tool calls
+        return os.environ.get("CLAUDE_CMD",
+                              "claude --permission-mode bypassPermissions --add-dir . -p"
+                              ).split() + [prompt]
     if a == "gemma":
         return ["pi", "--provider", "cliproxy", "--model", "gemma-31b",
                 "--thinking", thinking, "--print", prompt]
-    # kimi / implementer / default: the configured pi provider/model
+    # kimi / implementer / default: pi via configured provider/model
     return ["pi", "--provider", provider, "--model", model,
             "--thinking", thinking, "--print", prompt]
 
@@ -204,7 +207,7 @@ def run_parallel(steps, project, provider, model):
 
     if any(st == "blocked" for _, st, _ in results):
         return EXIT_BLOCKED
-    if any(st == "failed" for _, st, _ in results):
+    if any(st in ("failed", "empty") for _, st, _ in results):
         return 1
     return 0
 
